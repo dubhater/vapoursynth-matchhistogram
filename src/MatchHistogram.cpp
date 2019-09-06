@@ -44,7 +44,7 @@ private:
     unsigned char curve[256];
 
 public:
-    void Create(const uint8_t *ptr1, const uint8_t *ptr2, int width, int height, int stride, bool raw) {
+    void Create(const uint8_t *ptr1, const uint8_t *ptr2, int width, int height, int stride, bool raw, int smoothing_window) {
         // Clear data
         for (int i = 0; i < 256; i++) {
             sum[i] = 0;
@@ -161,14 +161,16 @@ public:
                 }
 
                 // Smooth curve
-                for (int i = 0; i < 256; i++) {
-                    sum[i] = 0;
-                    div[i] = 0;
+                if (smoothing_window > 0) {
+                    for (int i = 0; i < 256; i++) {
+                        sum[i] = 0;
+                        div[i] = 0;
 
-                    for (int j = -8; j < +8; j++) {
-                        if (i + j >= 0 && i + j < 256) {
-                            sum[i] += curve[i + j];
-                            div[i] += 1;
+                        for (int j = -smoothing_window; j < +smoothing_window; j++) {
+                            if (i + j >= 0 && i + j < 256) {
+                                sum[i] += curve[i + j];
+                                div[i] += 1;
+                            }
                         }
                     }
                 }
@@ -216,6 +218,7 @@ struct MatchHistogramData {
     bool raw;
     bool show;
     bool debug;
+    int smoothing_window;
     int process[3];
     VSVideoInfo vi;
 };
@@ -268,7 +271,7 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
                 int src_height = vsapi->getFrameHeight(src1, plane);
                 int src_stride = vsapi->getStride(src1, plane);
 
-                curve.Create(src1p, src2p, src_width, src_height, src_stride, d->raw);
+                curve.Create(src1p, src2p, src_width, src_height, src_stride, d->raw, d->smoothing_window);
                 curve.Debug(vsapi->getWritePtr(dst, 0),
                             vsapi->getStride(dst, 0));
             }
@@ -295,7 +298,7 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
                     int width = vsapi->getFrameWidth(src1, plane);
                     int height = vsapi->getFrameHeight(src1, plane);
 
-                    curve.Create(src1p, src2p, width, height, stride, d->raw);
+                    curve.Create(src1p, src2p, width, height, stride, d->raw, d->smoothing_window);
                     curve.Process(dstp, width, height, stride);
                 }
 
@@ -355,6 +358,16 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
     d.debug = !!vsapi->propGetInt(in, "debug", 0, &err);
     if (err)
         d.debug = false;
+
+    d.smoothing_window = int64ToIntS(vsapi->propGetInt(in, "smoothing_window", 0, &err));
+    if (err)
+        d.smoothing_window = 8;
+
+
+    if (d.smoothing_window < 0) {
+        vsapi->setError(out, "MatchHistogram: smoothing_window must not be negative.");
+        return;
+    }
 
 
     d.clip1 = vsapi->propGetNode(in, "clip1", 0, nullptr);
@@ -449,6 +462,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
                  "raw:int:opt;"
                  "show:int:opt;"
                  "debug:int:opt;"
+                 "smoothing_window:int:opt;"
                  "planes:int[]:opt;"
                  , MatchHistogramCreate, nullptr, plugin);
 }
