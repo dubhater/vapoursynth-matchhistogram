@@ -182,12 +182,13 @@ public:
         }
     }
 
-    void Process(uint8_t *ptr, int width, int height, int stride) {
+    void Process(const uint8_t *srcp, uint8_t *dstp, int width, int height, int stride) {
         for (int h = 0; h < height; h++) {
             for (int w = 0; w < width; w++)
-                ptr[w] = curve[ptr[w]];
+                dstp[w] = curve[srcp[w]];
 
-            ptr += stride;
+            srcp += stride;
+            dstp += stride;
         }
     }
 
@@ -215,6 +216,7 @@ public:
 struct MatchHistogramData {
     VSNodeRef *clip1;
     VSNodeRef *clip2;
+    VSNodeRef *clip3;
     bool raw;
     bool show;
     bool debug;
@@ -243,6 +245,7 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->clip1, frameCtx);
         vsapi->requestFrameFilter(n, d->clip2, frameCtx);
+        vsapi->requestFrameFilter(n, d->clip3, frameCtx);
     } else if (activationReason == arAllFramesReady) {
         const VSFrameRef *src1 = vsapi->getFrameFilter(n, d->clip1, frameCtx);
         const VSFrameRef *src2 = vsapi->getFrameFilter(n, d->clip2, frameCtx);
@@ -276,10 +279,12 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
                             vsapi->getStride(dst, 0));
             }
         } else { // Not debug
+            const VSFrameRef *src3 = vsapi->getFrameFilter(n, d->clip3, frameCtx);
+
             const VSFrameRef *plane_src[3] = {
-                d->process[0] ? nullptr : src1,
-                d->process[1] ? nullptr : src1,
-                d->process[2] ? nullptr : src1
+                d->process[0] ? nullptr : src3,
+                d->process[1] ? nullptr : src3,
+                d->process[2] ? nullptr : src3
             };
 
             int planes[3] = { 0, 1, 2 };
@@ -295,11 +300,12 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
                 if (d->process[plane]) {
                     const uint8_t *src1p = vsapi->getReadPtr(src1, plane);
                     const uint8_t *src2p = vsapi->getReadPtr(src2, plane);
+                    const uint8_t *src3p = vsapi->getReadPtr(src3, plane);
                     int width = vsapi->getFrameWidth(src1, plane);
                     int height = vsapi->getFrameHeight(src1, plane);
 
                     curve.Create(src1p, src2p, width, height, stride, d->raw, d->smoothing_window);
-                    curve.Process(dstp, width, height, stride);
+                    curve.Process(src3p, dstp, width, height, stride);
                 }
 
                 if (d->show) {
@@ -316,6 +322,8 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
                     }
                 }
             }
+
+            vsapi->freeFrame(src3);
         }
 
         vsapi->freeFrame(src1);
@@ -335,6 +343,7 @@ static void VS_CC MatchHistogramFree(void *instanceData, VSCore *core, const VSA
 
     vsapi->freeNode(d->clip1);
     vsapi->freeNode(d->clip2);
+    vsapi->freeNode(d->clip3);
     free(d);
 }
 
@@ -376,12 +385,21 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
     d.clip2 = vsapi->propGetNode(in, "clip2", 0, nullptr);
     const VSVideoInfo *vi2 = vsapi->getVideoInfo(d.clip2);
 
+    d.clip3 = vsapi->propGetNode(in, "clip3", 0, &err);
+    if (err)
+        d.clip3 = vsapi->cloneNodeRef(d.clip1);
+    const VSVideoInfo *vi3 = vsapi->getVideoInfo(d.clip3);
+
     if (d.vi.format != vi2->format ||
         d.vi.width != vi2->width ||
-        d.vi.height != vi2->height) {
+        d.vi.height != vi2->height ||
+        d.vi.format != vi3->format ||
+        d.vi.width != vi3->width ||
+        d.vi.height != vi3->height) {
         vsapi->setError(out, "MatchHistogram: the clips must have the same format and dimensions.");
         vsapi->freeNode(d.clip1);
         vsapi->freeNode(d.clip2);
+        vsapi->freeNode(d.clip3);
         return;
     }
 
@@ -389,6 +407,7 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
         vsapi->setError(out, "MatchHistogram: the clips must have constant format and dimensions.");
         vsapi->freeNode(d.clip1);
         vsapi->freeNode(d.clip2);
+        vsapi->freeNode(d.clip3);
         return;
     }
 
@@ -396,6 +415,7 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
         vsapi->setError(out, "MatchHistogram: the clips must have 8 bits per sample and must not be RGB.");
         vsapi->freeNode(d.clip1);
         vsapi->freeNode(d.clip2);
+        vsapi->freeNode(d.clip3);
         return;
     }
 
@@ -413,6 +433,7 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
         if (o < 0 || o >= n) {
             vsapi->freeNode(d.clip1);
             vsapi->freeNode(d.clip2);
+            vsapi->freeNode(d.clip3);
             vsapi->setError(out, "MatchHistogram: plane index out of range");
             return;
         }
@@ -420,6 +441,7 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
         if (d.process[o]) {
             vsapi->freeNode(d.clip1);
             vsapi->freeNode(d.clip2);
+            vsapi->freeNode(d.clip3);
             vsapi->setError(out, "MatchHistogram: plane specified twice");
             return;
         }
@@ -432,6 +454,7 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
             vsapi->setError(out, "MatchHistogram: only one plane can be processed at a time when debug is True.");
             vsapi->freeNode(d.clip1);
             vsapi->freeNode(d.clip2);
+            vsapi->freeNode(d.clip3);
             return;
         }
 
@@ -443,6 +466,7 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
         vsapi->setError(out, "MatchHistogram: clips must be at least 256x256 pixels when show is True.");
         vsapi->freeNode(d.clip1);
         vsapi->freeNode(d.clip2);
+        vsapi->freeNode(d.clip3);
         return;
     }
 
@@ -459,6 +483,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
     registerFunc("MatchHistogram",
                  "clip1:clip;"
                  "clip2:clip;"
+                 "clip3:clip:opt;"
                  "raw:int:opt;"
                  "show:int:opt;"
                  "debug:int:opt;"
