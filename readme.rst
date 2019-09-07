@@ -34,7 +34,7 @@ Parameters:
     *clip3*
         Clip to be modified to match *clip2*'s histogram.
 
-        Must have the same format and dimensions as *clip1*.
+        Must have the same format as *clip1* and constant dimensions.
 
         If this parameter is not passed then *clip1* is used instead.
 

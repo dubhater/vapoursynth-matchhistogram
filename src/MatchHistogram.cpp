@@ -289,30 +289,33 @@ static const VSFrameRef *VS_CC MatchHistogramGetFrame(int n, int activationReaso
 
             int planes[3] = { 0, 1, 2 };
 
-            dst = vsapi->newVideoFrame2(d->vi.format, d->vi.width, d->vi.height, plane_src, planes, src1, core);
+            dst = vsapi->newVideoFrame2(d->vi.format, d->vi.width, d->vi.height, plane_src, planes, src3, core);
 
             uint8_t show_colors[3] = { 235, 160, 96 };
 
             for (int plane = 0; plane < d->vi.format->numPlanes; plane++) {
                 uint8_t *dstp = vsapi->getWritePtr(dst, plane);
-                int stride = vsapi->getStride(dst, plane);
+                int src3dst_stride = vsapi->getStride(dst, plane);
 
                 if (d->process[plane]) {
                     const uint8_t *src1p = vsapi->getReadPtr(src1, plane);
                     const uint8_t *src2p = vsapi->getReadPtr(src2, plane);
                     const uint8_t *src3p = vsapi->getReadPtr(src3, plane);
-                    int width = vsapi->getFrameWidth(src1, plane);
-                    int height = vsapi->getFrameHeight(src1, plane);
+                    int src12_width = vsapi->getFrameWidth(src1, plane);
+                    int src12_height = vsapi->getFrameHeight(src1, plane);
+                    int src12_stride = vsapi->getStride(src1, plane);
+                    int src3dst_width = vsapi->getFrameWidth(src3, plane);
+                    int src3dst_height = vsapi->getFrameHeight(src3, plane);
 
-                    curve.Create(src1p, src2p, width, height, stride, d->raw, d->smoothing_window);
-                    curve.Process(src3p, dstp, width, height, stride);
+                    curve.Create(src1p, src2p, src12_width, src12_height, src12_stride, d->raw, d->smoothing_window);
+                    curve.Process(src3p, dstp, src3dst_width, src3dst_height, src3dst_stride);
                 }
 
                 if (d->show) {
                     fillPlane(dstp,
                               256 >> (plane ? d->vi.format->subSamplingW : 0),
                               256 >> (plane ? d->vi.format->subSamplingH : 0),
-                              stride,
+                              src3dst_stride,
                               plane ? 128 : 16);
 
                     if (d->process[plane]) {
@@ -368,6 +371,9 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
     if (err)
         d.debug = false;
 
+    if (d.debug)
+        d.show = false;
+
     d.smoothing_window = int64ToIntS(vsapi->propGetInt(in, "smoothing_window", 0, &err));
     if (err)
         d.smoothing_window = 8;
@@ -391,19 +397,24 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
     const VSVideoInfo *vi3 = vsapi->getVideoInfo(d.clip3);
 
     if (d.vi.format != vi2->format ||
-        d.vi.width != vi2->width ||
-        d.vi.height != vi2->height ||
-        d.vi.format != vi3->format ||
-        d.vi.width != vi3->width ||
-        d.vi.height != vi3->height) {
-        vsapi->setError(out, "MatchHistogram: the clips must have the same format and dimensions.");
+        d.vi.format != vi3->format) {
+        vsapi->setError(out, "MatchHistogram: the clips must have the same format.");
         vsapi->freeNode(d.clip1);
         vsapi->freeNode(d.clip2);
         vsapi->freeNode(d.clip3);
         return;
     }
 
-    if (!d.vi.format || d.vi.width == 0 || d.vi.height == 0) {
+    if (d.vi.width != vi2->width || d.vi.height != vi2->height) {
+        vsapi->setError(out, "MatchHistogram: the first two clips must have the same dimensions.");
+        vsapi->freeNode(d.clip1);
+        vsapi->freeNode(d.clip2);
+        vsapi->freeNode(d.clip3);
+        return;
+    }
+
+    if (!d.vi.format || d.vi.width == 0 || d.vi.height == 0 ||
+        vi3->width == 0 || vi3->height == 0) {
         vsapi->setError(out, "MatchHistogram: the clips must have constant format and dimensions.");
         vsapi->freeNode(d.clip1);
         vsapi->freeNode(d.clip2);
@@ -449,6 +460,14 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
         d.process[o] = 1;
     }
 
+    if (d.show && (d.vi.width < 256 || d.vi.height < 256 || vi3->width < 256 || vi3->height < 256)) {
+        vsapi->setError(out, "MatchHistogram: clips must be at least 256x256 pixels when show is True.");
+        vsapi->freeNode(d.clip1);
+        vsapi->freeNode(d.clip2);
+        vsapi->freeNode(d.clip3);
+        return;
+    }
+
     if (d.debug) {
         if (d.process[0] + d.process[1] + d.process[2] > 1) {
             vsapi->setError(out, "MatchHistogram: only one plane can be processed at a time when debug is True.");
@@ -460,14 +479,8 @@ static void VS_CC MatchHistogramCreate(const VSMap *in, VSMap *out, void *userDa
 
         d.vi.width = 256;
         d.vi.height = 256;
-    }
-
-    if (d.show && (d.vi.width < 256 || d.vi.height < 256)) {
-        vsapi->setError(out, "MatchHistogram: clips must be at least 256x256 pixels when show is True.");
-        vsapi->freeNode(d.clip1);
-        vsapi->freeNode(d.clip2);
-        vsapi->freeNode(d.clip3);
-        return;
+    } else {
+        d.vi = *vi3;
     }
 
 
